@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: telegram-user-bot
+    env: docker
+    region: singapore
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: API_MONGO_URL
+        sync: false
+      - key: API_RAG_URL
+        sync: false
+    autoDeploy: true 
