@@ -1,57 +1,57 @@
 # User Bot
 
-Bot Telegram dùng để tương tác với người dùng và tích hợp RAG model.
+Telegram bot used for interacting with users and integrating RAG model.
 
-## Cấu trúc
+## Structure
 
-Bot này cung cấp các chức năng sau:
-- Trả lời câu hỏi bằng RAG model
-- Hiển thị thông tin sự kiện
-- Hiển thị các câu hỏi thường gặp (FAQ)
-- Cung cấp menu truy cập nhanh
+This bot provides the following functions:
+- Answering questions using RAG model
+- Displaying event information
+- Displaying frequently asked questions (FAQ)
+- Providing quick access menu
 
-## Biến môi trường cần thiết
+## Required Environment Variables
 
-- `TELEGRAM_BOT_TOKEN`: Token của bot Telegram từ BotFather
-- `API_MONGO_URL`: URL của MongoDB API
-- `API_RAG_URL`: URL của RAG API
+- `TELEGRAM_BOT_TOKEN`: Telegram bot token from BotFather
+- `API_MONGO_URL`: MongoDB API URL
+- `API_RAG_URL`: RAG API URL
 
-## Triển khai lên Render
+## Deployment on Render
 
-### Bước 1: Đăng ký tài khoản Render
+### Step 1: Register a Render Account
 
-Truy cập [Render](https://render.com) và đăng ký tài khoản nếu chưa có.
+Visit [Render](https://render.com) and register an account if you don't have one.
 
-### Bước 2: Tạo Web Service mới
+### Step 2: Create a New Web Service
 
-1. Đăng nhập vào Render và nhấp vào "New +"
-2. Chọn "Web Service"
-3. Kết nối với kho GitHub của bạn hoặc tải lên trực tiếp
+1. Log in to Render and click on "New +"
+2. Select "Web Service"
+3. Connect with your GitHub repository or upload directly
 
-### Bước 3: Cấu hình Web Service
+### Step 3: Configure Web Service
 
-1. **Tên**: Đặt tên cho service (ví dụ: telegram-user-bot)
-2. **Runtime**: Chọn Docker
-3. **Root Directory**: Chỉ định đường dẫn tới thư mục `telegram/user_bot`
-4. **Build Command**: Để trống (sử dụng Dockerfile)
-5. **Start Command**: Để trống (sử dụng CMD trong Dockerfile)
+1. **Name**: Set a name for the service (e.g., telegram-user-bot)
+2. **Runtime**: Choose Docker
+3. **Root Directory**: Specify the path to the `telegram/user_bot` directory
+4. **Build Command**: Leave empty (use Dockerfile)
+5. **Start Command**: Leave empty (use CMD in Dockerfile)
 
-### Bước 4: Thiết lập biến môi trường
+### Step 4: Set Up Environment Variables
 
-Trong mục "Environment", thêm các biến sau:
+In the "Environment" section, add the following variables:
 
-- `TELEGRAM_BOT_TOKEN`: Token của bot Telegram từ BotFather
-- `API_MONGO_URL`: URL của MongoDB API 
-- `API_RAG_URL`: URL của RAG API
+- `TELEGRAM_BOT_TOKEN`: Telegram bot token from BotFather
+- `API_MONGO_URL`: MongoDB API URL
+- `API_RAG_URL`: RAG API URL
 
-### Bước 5: Chọn plan và triển khai
+### Step 5: Choose a Plan and Deploy
 
-1. Chọn plan phù hợp (có thể sử dụng Free plan cho testing)
-2. Nhấp "Create Web Service"
+1. Select an appropriate plan (you can use the Free plan for testing)
+2. Click "Create Web Service"
 
-## Lưu ý quan trọng
+## Important Notes
 
-- Đảm bảo API_MONGO_URL và API_RAG_URL có thể truy cập từ internet
-- Free plan của Render sẽ tạm ngừng hoạt động sau 15 phút không có traffic, làm chậm phản hồi đầu tiên
-- Kiểm tra logs trên Render nếu bot không hoạt động
-- Nếu gặp lỗi "health check failed", kiểm tra lại cấu hình để đảm bảo server HTTP lắng nghe trên cổng đúng 
+- Ensure API_MONGO_URL and API_RAG_URL are accessible from the internet
+- Render's Free plan will pause after 15 minutes of inactivity, slowing down the first response
+- Check logs on Render if the bot is not working
+- If you encounter a "health check failed" error, check your configuration to ensure the HTTP server is listening on the correct port 

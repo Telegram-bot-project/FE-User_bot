@@ -16,7 +16,7 @@ from functools import lru_cache
 import time
 import re
 from collections import defaultdict
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional, Any
 import hashlib
 import base64
 from redis.asyncio import Redis, from_url
@@ -37,27 +37,112 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 API_MONGO_URL = os.getenv("API_MONGO_URL")
 API_RAG_URL = os.getenv("API_RAG_URL")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+USE_REDIS = os.getenv("USE_REDIS", "true").lower() == "true"
 
 # Redis connection pool
 redis_pool = None
 redis_pool_size = 10
 
+# In-memory cache fallback when Redis is unavailable
+memory_cache = {}
+memory_cache_ttl = {}
+
+# Mock Redis implementation for when Redis is unavailable
+class MockRedis:
+    """
+    Mock Redis implementation that stores data in memory
+    Used as a fallback when Redis is unavailable
+    """
+    async def get(self, key: str) -> Optional[str]:
+        """Get a value from the memory cache"""
+        # Check if key exists and hasn't expired
+        if key in memory_cache and key in memory_cache_ttl:
+            if time.time() < memory_cache_ttl[key]:
+                return memory_cache[key]
+            else:
+                # Expired, clean up
+                del memory_cache[key]
+                del memory_cache_ttl[key]
+        return None
+    
+    async def setex(self, key: str, ttl: int, value: str) -> bool:
+        """Set a value in the memory cache with an expiration time"""
+        memory_cache[key] = value
+        memory_cache_ttl[key] = time.time() + ttl
+        return True
+    
+    async def delete(self, key: str) -> int:
+        """Delete a key from the memory cache"""
+        if key in memory_cache:
+            del memory_cache[key]
+            if key in memory_cache_ttl:
+                del memory_cache_ttl[key]
+            return 1
+        return 0
+    
+    def pipeline(self):
+        """Return a mock pipeline"""
+        return MockRedisPipeline()
+
+class MockRedisPipeline:
+    """Mock Redis Pipeline for batch operations"""
+    def __init__(self):
+        self.commands = []
+    
+    def setex(self, key, ttl, value):
+        """Add setex command to pipeline"""
+        self.commands.append(("setex", key, ttl, value))
+        return self
+    
+    async def execute(self):
+        """Execute all commands in the pipeline"""
+        results = []
+        for cmd in self.commands:
+            if cmd[0] == "setex":
+                memory_cache[cmd[1]] = cmd[3]
+                memory_cache_ttl[cmd[1]] = time.time() + cmd[2]
+                results.append(True)
+        self.commands = []
+        return results
+
 # Debounce locks for user input
 input_locks = {}
 
-async def get_redis() -> Redis:
+async def get_redis() -> Any:
     """
-    Get Redis connection from pool with optimized settings
+    Get Redis connection with fallback to memory cache if Redis is unavailable
     """
     global redis_pool
+    
+    if not USE_REDIS:
+        logger.info("Redis disabled by configuration, using in-memory cache")
+        return MockRedis()
+    
     if redis_pool is None:
-        redis_pool = await from_url(
-            REDIS_URL, 
-            encoding="utf-8", 
-            decode_responses=True,
-            max_connections=redis_pool_size
-        )
-    return redis_pool
+        try:
+            redis_pool = await from_url(
+                REDIS_URL, 
+                encoding="utf-8", 
+                decode_responses=True,
+                max_connections=redis_pool_size
+            )
+            logger.info("Successfully connected to Redis")
+            
+            # Test the connection
+            await redis_pool.ping()
+            
+        except Exception as e:
+            logger.warning(f"Redis connection failed: {e}, using in-memory fallback")
+            return MockRedis()
+    
+    # Check if connection is still alive
+    try:
+        await redis_pool.ping()
+        return redis_pool
+    except Exception as e:
+        logger.warning(f"Redis connection lost: {e}, using in-memory fallback")
+        redis_pool = None  # Reset pool for next attempt
+        return MockRedis()
 
 # Cache configuration
 CACHE_TTL = {
@@ -76,8 +161,7 @@ RATE_LIMIT = 5  # messages per minute
 RATE_LIMIT_WINDOW = 60  # seconds
 user_message_counts: Dict[int, Tuple[int, float]] = defaultdict(lambda: (0, time.time()))
 
-# Input validation patterns
-ALLOWED_CHARS_PATTERN = re.compile(r'^[a-zA-Z0-9\s.,!?-]+$')
+# Input validation parameters
 MAX_MESSAGE_LENGTH = 500
 
 # Background cache refresh
@@ -126,8 +210,11 @@ async def background_cache_refresh():
                 logger.error(f"Error refreshing assistants cache: {e}")
             
             # Execute pipeline
-            await pipeline.execute()
-            logger.info("Background cache refresh completed")
+            try:
+                await pipeline.execute()
+                logger.info("Background cache refresh completed")
+            except Exception as e:
+                logger.warning(f"Failed to execute Redis pipeline: {e} - Cache might be incomplete")
             
             # Sleep for 15 minutes before next refresh (less than cache TTL)
             await asyncio.sleep(900)  
@@ -249,10 +336,14 @@ def start_health_server():
     Render automatically sets PORT environment variable and expects the
     service to listen on that port
     """
-    port = int(os.getenv("PORT", 10000))
+    port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    logger.info(f"Starting health check server on port {port}")
-    server.serve_forever()
+    
+    # Use threading to run health server in background
+    server_thread = threading.Thread(target=server.serve_forever)
+    server_thread.daemon = True  # Allow the thread to be killed when main program exits
+    server_thread.start()
+    logger.info(f"Health check server started on port {port}")
 
 # Vietnam timezone
 vietnam_tz = pytz.timezone('Asia/Ho_Chi_Minh')
@@ -331,30 +422,40 @@ async def get_events(message):
         # Show immediate response with temporary message
         temp_message = await message.reply_text("📅 *Loading events...*", parse_mode="Markdown")
         
-        redis = await get_redis()
-        cache_key = "events_cache"
-        
         # Try to get from cache first
-        cached_events = await redis.get(cache_key)
-        if cached_events:
-            events = json.loads(cached_events)
-            logger.info("Retrieved events from cache")
-        else:
-            # If not in cache, fetch from API
-            session = await get_session()
-            async with session.get("https://zok213-teleadmindb.hf.space/api/knowledge/closest-events") as response:
-                if response.status == 200:
-                    data = await response.json()
-                    events = data if isinstance(data, list) else data.get("events", [])
-                    
-                    # Cache the events
-                    await redis.setex(
-                        cache_key,
-                        CACHE_TTL['events'],
-                        json.dumps(events)
-                    )
-                else:
-                    events = []
+        events = []
+        try:
+            redis = await get_redis()
+            cache_key = "events_cache"
+            
+            cached_events = await redis.get(cache_key)
+            if cached_events:
+                events = json.loads(cached_events)
+                logger.info("Retrieved events from cache")
+        except Exception as e:
+            logger.warning(f"Failed to get events from cache: {e}")
+        
+        # If not in cache or cache failed, fetch from API
+        if not events:
+            try:
+                session = await get_session()
+                async with session.get("https://zok213-teleadmindb.hf.space/api/knowledge/closest-events") as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        events = data if isinstance(data, list) else data.get("events", [])
+                        
+                        # Try to cache the events
+                        try:
+                            redis = await get_redis()
+                            await redis.setex(
+                                "events_cache",
+                                CACHE_TTL['events'],
+                                json.dumps(events)
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to cache events: {e}")
+            except Exception as e:
+                logger.error(f"Failed to fetch events from API: {e}")
         
         if not events:
             await temp_message.edit_text("No upcoming events found.")
@@ -399,30 +500,40 @@ async def get_assistants(message):
         # Show immediate response with temporary message
         temp_message = await message.reply_text("🔄 *Loading assistant information...*", parse_mode="Markdown")
         
-        redis = await get_redis()
-        cache_key = "assistants_cache"
-        
         # Try to get from cache first
-        cached_assistants = await redis.get(cache_key)
-        if cached_assistants:
-            assistants = json.loads(cached_assistants)
-            logger.info("Retrieved assistants from cache")
-        else:
-            # If not in cache, fetch from API
-            session = await get_session()
-            async with session.get("https://zok213-teleadmindb.hf.space/api/sos") as response:
-                if response.status == 200:
-                    data = await response.json()
-                    assistants = data if isinstance(data, list) else data.get("assistants", [])
-                    
-                    # Cache the assistants
-                    await redis.setex(
-                        cache_key,
-                        CACHE_TTL['assistants'],
-                        json.dumps(assistants)
-                    )
-                else:
-                    assistants = []
+        assistants = []
+        try:
+            redis = await get_redis()
+            cache_key = "assistants_cache"
+            
+            cached_assistants = await redis.get(cache_key)
+            if cached_assistants:
+                assistants = json.loads(cached_assistants)
+                logger.info("Retrieved assistants from cache")
+        except Exception as e:
+            logger.warning(f"Failed to get assistants from cache: {e}")
+        
+        # If not in cache or cache failed, fetch from API
+        if not assistants:
+            try:
+                session = await get_session()
+                async with session.get("https://zok213-teleadmindb.hf.space/api/sos") as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        assistants = data if isinstance(data, list) else data.get("assistants", [])
+                        
+                        # Try to cache the assistants
+                        try:
+                            redis = await get_redis()
+                            await redis.setex(
+                                "assistants_cache",
+                                CACHE_TTL['assistants'],
+                                json.dumps(assistants)
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to cache assistants: {e}")
+            except Exception as e:
+                logger.error(f"Failed to fetch assistants from API: {e}")
         
         if not assistants:
             await temp_message.edit_text("No assistants available at the moment.")
@@ -454,30 +565,40 @@ async def get_faqs(message):
         # Show immediate response with temporary message
         temp_message = await message.reply_text("🔄 *Loading FAQs...*", parse_mode="Markdown")
         
-        redis = await get_redis()
-        cache_key = "faqs_cache"
-        
         # Try to get from cache first
-        cached_faqs = await redis.get(cache_key)
-        if cached_faqs:
-            faqs = json.loads(cached_faqs)
-            logger.info("Retrieved FAQs from cache")
-        else:
-            # If not in cache, fetch from API
-            session = await get_session()
-            async with session.get("https://zok213-teleadmindb.hf.space/api/faq") as response:
-                if response.status == 200:
-                    data = await response.json()
-                    faqs = data if isinstance(data, list) else data.get("faqs", [])
-                    
-                    # Cache the FAQs
-                    await redis.setex(
-                        cache_key,
-                        CACHE_TTL['faq'],
-                        json.dumps(faqs)
-                    )
-                else:
-                    faqs = []
+        faqs = []
+        try:
+            redis = await get_redis()
+            cache_key = "faqs_cache"
+            
+            cached_faqs = await redis.get(cache_key)
+            if cached_faqs:
+                faqs = json.loads(cached_faqs)
+                logger.info("Retrieved FAQs from cache")
+        except Exception as e:
+            logger.warning(f"Failed to get FAQs from cache: {e}")
+        
+        # If not in cache or cache failed, fetch from API
+        if not faqs:
+            try:
+                session = await get_session()
+                async with session.get("https://zok213-teleadmindb.hf.space/api/faq") as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        faqs = data if isinstance(data, list) else data.get("faqs", [])
+                        
+                        # Try to cache the FAQs
+                        try:
+                            redis = await get_redis()
+                            await redis.setex(
+                                "faqs_cache",
+                                CACHE_TTL['faq'],
+                                json.dumps(faqs)
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to cache FAQs: {e}")
+            except Exception as e:
+                logger.error(f"Failed to fetch FAQs from API: {e}")
         
         # Delete the temporary message
         await temp_message.delete()
@@ -519,12 +640,20 @@ async def get_faq_answer(message, faq_id):
         logger.info(f"Fetching FAQ answer for ID: {faq_id}")
         
         # Try to get from cache first
-        redis = await get_redis()
-        cache_key = f"faq_answer:{faq_id}"
+        answer_data = None
+        try:
+            redis = await get_redis()
+            cache_key = f"faq_answer:{faq_id}"
+            
+            cached_answer = await redis.get(cache_key)
+            if cached_answer:
+                answer_data = json.loads(cached_answer)
+                logger.info(f"Retrieved FAQ answer from cache for ID: {faq_id}")
+        except Exception as e:
+            logger.warning(f"Failed to get FAQ answer from cache: {e}")
         
-        cached_answer = await redis.get(cache_key)
-        if cached_answer:
-            answer_data = json.loads(cached_answer)
+        # If found in cache, display it
+        if answer_data:
             question = answer_data.get('question', 'No question')
             answer = answer_data.get('answer', 'No answer available')
             
@@ -534,63 +663,71 @@ async def get_faq_answer(message, faq_id):
             await temp_message.edit_text(response_text, parse_mode="Markdown")
             return
         
-        # If not in cache, get from API
-        session = await get_session()
-        async with session.get(
-            "https://zok213-teleadmindb.hf.space/api/faq",
-            timeout=aiohttp.ClientTimeout(total=5)
-        ) as response:
-            if response.status == 200:
-                response_text = await response.text()
-                logger.info(f"FAQ list response received")
-                
-                # Parse JSON response 
-                all_faqs = await response.json()
-                
-                # Ensure all_faqs is a list
-                if isinstance(all_faqs, dict):
-                    all_faqs = all_faqs.get("faqs", [])
+        # If not in cache or cache failed, get from API
+        try:
+            session = await get_session()
+            async with session.get(
+                "https://zok213-teleadmindb.hf.space/api/faq",
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as response:
+                if response.status == 200:
+                    response_text = await response.text()
+                    logger.info(f"FAQ list response received")
                     
-                # Find the FAQ with the matching ID
-                matched_faq = None
-                for faq in all_faqs:
-                    if str(faq.get("id")) == str(faq_id):
-                        matched_faq = faq
-                        break
-                
-                if matched_faq:
-                    question = matched_faq.get("question", "No question")
-                    answer = matched_faq.get("answer", "No answer available")
+                    # Parse JSON response 
+                    all_faqs = await response.json()
                     
-                    logger.info(f"Found FAQ: {question}")
+                    # Ensure all_faqs is a list
+                    if isinstance(all_faqs, dict):
+                        all_faqs = all_faqs.get("faqs", [])
+                        
+                    # Find the FAQ with the matching ID
+                    matched_faq = None
+                    for faq in all_faqs:
+                        if str(faq.get("id")) == str(faq_id):
+                            matched_faq = faq
+                            break
                     
-                    # Cache the answer
-                    answer_data = {
-                        'question': question,
-                        'answer': answer
-                    }
-                    await redis.setex(
-                        cache_key,
-                        CACHE_TTL['faq'],
-                        json.dumps(answer_data)
-                    )
-                    
-                    response_text = f"❓ *{question}*\n\n"
-                    response_text += f"❗ {answer}"
-                    
-                    await temp_message.edit_text(response_text, parse_mode="Markdown")
+                    if matched_faq:
+                        question = matched_faq.get("question", "No question")
+                        answer = matched_faq.get("answer", "No answer available")
+                        
+                        logger.info(f"Found FAQ: {question}")
+                        
+                        # Try to cache the answer
+                        try:
+                            redis = await get_redis()
+                            answer_data = {
+                                'question': question,
+                                'answer': answer
+                            }
+                            await redis.setex(
+                                f"faq_answer:{faq_id}",
+                                CACHE_TTL['faq'],
+                                json.dumps(answer_data)
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to cache FAQ answer: {e}")
+                        
+                        response_text = f"❓ *{question}*\n\n"
+                        response_text += f"❗ {answer}"
+                        
+                        await temp_message.edit_text(response_text, parse_mode="Markdown")
+                    else:
+                        logger.warning(f"FAQ with ID {faq_id} not found")
+                        await temp_message.edit_text("This question is no longer available. Please select another question.")
                 else:
-                    logger.warning(f"FAQ with ID {faq_id} not found")
-                    await temp_message.edit_text("This question is no longer available. Please select another question.")
-            else:
-                error_text = await response.text()
-                logger.error(f"Failed to get FAQ list (status {response.status})")
-                await temp_message.edit_text("Unable to fetch FAQ answer at this time. Please try again later.")
-    except asyncio.TimeoutError:
-        logger.error(f"Timeout getting FAQ answer for ID: {faq_id}")
-        await message.reply_text("Request timed out. Please try again later.")
+                    error_text = await response.text()
+                    logger.error(f"Failed to get FAQ list (status {response.status})")
+                    await temp_message.edit_text("Unable to fetch FAQ answer at this time. Please try again later.")
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout getting FAQ answer for ID: {faq_id}")
+            await message.reply_text("Request timed out. Please try again later.")
+        except Exception as e:
+            logger.error(f"Error getting FAQ from API: {e}")
+            await temp_message.edit_text("Unable to fetch FAQ answer at this time. Please try again later.")
     except Exception as e:
-        logger.error(f"Error getting FAQ answer: {e}")
+        logger.error(f"Error in get_faq_answer: {e}")
         await message.reply_text("Unable to fetch FAQ answer at this time. Please try again later.")
 
 # Function to get response from RAG model with Redis cache - Optimized
@@ -599,17 +736,20 @@ async def get_rag_response(user_message, user_id):
     Get response from RAG model with Redis cache
     """
     try:
-        redis = await get_redis()
-        # Include user_id in cache key for personalized responses
-        cache_key = f"rag_response:{user_id}:{hashlib.md5(user_message.encode()).hexdigest()}"
+        # Try to get from cache first if Redis is available
+        try:
+            redis = await get_redis()
+            # Include user_id in cache key for personalized responses
+            cache_key = f"rag_response:{user_id}:{hashlib.md5(user_message.encode()).hexdigest()}"
+            
+            cached_response = await redis.get(cache_key)
+            if cached_response:
+                logger.info(f"Retrieved RAG response from cache for user {user_id}")
+                return cached_response
+        except Exception as e:
+            logger.warning(f"Cache retrieval failed, proceeding to API: {e}")
         
-        # Try to get from cache first
-        cached_response = await redis.get(cache_key)
-        if cached_response:
-            logger.info(f"Retrieved RAG response from cache for user {user_id}")
-            return cached_response
-        
-        # If not in cache, get from API
+        # If not in cache or cache failed, get from API
         session = await get_session()
         # Use actual user_id in API call
         payload = {"query": user_message, "user_id": str(user_id)}
@@ -628,12 +768,17 @@ async def get_rag_response(user_message, user_id):
                         rag_answer = str(result)
                     
                     if rag_answer:
-                        # Cache the response
-                        await redis.setex(
-                            cache_key,
-                            CACHE_TTL['rag_response'],
-                            rag_answer
-                        )
+                        # Try to cache the response, but don't fail if cache fails
+                        try:
+                            redis = await get_redis()
+                            await redis.setex(
+                                cache_key,
+                                CACHE_TTL['rag_response'],
+                                rag_answer
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to cache RAG response: {e}")
+                        
                         return rag_answer
                     else:
                         return "I don't know how to answer that. Let me forward this to the admin team."
@@ -820,13 +965,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if is_rate_limited(user_id):
                 await update.message.reply_text(
                     "You have sent too many messages. Please wait a moment and try again later."
-                )
-                return
-            
-            # Input validation
-            if not ALLOWED_CHARS_PATTERN.match(user_message):
-                await update.message.reply_text(
-                    "Your message contains invalid characters. Please use only letters, numbers and basic characters."
                 )
                 return
             

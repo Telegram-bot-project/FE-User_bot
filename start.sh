@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# Đảm bảo script crash khi có lỗi
+# Ensure script crashes on error
 set -e
 
-# Hiển thị phiên bản Python
+# Display Python version
 python --version
 
-# Kiểm tra biến môi trường
+# Check environment variables
 if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
     echo "Error: TELEGRAM_BOT_TOKEN is not set"
     exit 1
@@ -22,12 +22,12 @@ if [ -z "$API_RAG_URL" ]; then
     exit 1
 fi
 
-# Đặt PORT mặc định nếu không có
+# Set default PORT if not provided
 if [ -z "$PORT" ]; then
     export PORT=10000
     echo "PORT not set, defaulting to $PORT"
 fi
 
-# Khởi động bot
+# Start the bot
 echo "Starting Telegram User Bot..."
 exec python user_bot.py 
