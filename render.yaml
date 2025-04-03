@@ -1,10 +1,9 @@
 services:
   - type: web
     name: telegram-user-bot
-    env: docker
-    region: singapore
-    plan: free
-    healthCheckPath: /health
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python user_bot.py
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
@@ -12,4 +11,10 @@ services:
         sync: false
       - key: API_RAG_URL
         sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: USE_REDIS
+        value: "true"
+      - key: PORT
+        value: "8080"
     autoDeploy: true 

@@ -110,7 +110,7 @@ input_locks = {}
 
 async def get_redis() -> Any:
     """
-    Get Redis connection with fallback to memory cache if Redis is unavailable
+    Get Redis connection with graceful fallback to memory cache
     """
     global redis_pool
     
@@ -781,10 +781,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/start"
     ))
     
-    # Welcome message
+    # Welcome message in English
     welcome_text = f"Hello {user.first_name}! Welcome to the Solana SuperTeam Bot. I can help you with information about Solana SuperTeam and events."
     
-    # Help guide
+    # Help guide in English
     help_guide = """
 *Available Commands:*
 • /start - Start the bot and display main menu
@@ -814,7 +814,7 @@ Use the buttons below to navigate or type your question anytime.
         ],
         [
             InlineKeyboardButton("Events", callback_data="events"),
-            InlineKeyboardButton("Access SolonaSuperTeam", callback_data="access_solona")
+            InlineKeyboardButton("Access SolonaSuperTeam", url="https://vn.superteam.fun/")
         ],
         [
             InlineKeyboardButton("Assistant", callback_data="assistant"),
@@ -873,22 +873,25 @@ If you need further assistance, please contact an admin.
 # Handle button callbacks - Optimized
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Handle button callbacks
+    Handle button callbacks with optimized performance
     """
     query = update.callback_query
-    await query.answer("Loading...")  # Show loading popup to user
-    
     user = query.from_user
     callback_data = query.data
     
-    # Save button click session asynchronously without waiting
-    asyncio.create_task(save_session(
-        user.id, 
-        user.username, 
-        user.first_name, 
-        user.last_name, 
-        callback_data
-    ))
+    # Create tasks list for concurrent execution
+    tasks = []
+    
+    # Add session saving task
+    tasks.append(
+        save_session(
+            user.id,
+            user.username,
+            user.first_name,
+            user.last_name,
+            callback_data
+        )
+    )
     
     try:
         if callback_data == "knowledge_portal":
@@ -898,22 +901,21 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("What would you like to know about the Solana Summit event?")
         
         elif callback_data == "events":
-            await get_events(query.message)
-        
-        elif callback_data == "access_solona":
-            keyboard = [[InlineKeyboardButton("Access SolonaSuperTeam", url="https://vn.superteam.fun/")]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.message.reply_text("Click below to access SolonaSuperTeam:", reply_markup=reply_markup)
+            tasks.append(get_events(query.message))
         
         elif callback_data == "assistant":
-            await get_assistants(query.message)
+            tasks.append(get_assistants(query.message))
         
         elif callback_data == "faq":
-            await get_faqs(query.message)
+            tasks.append(get_faqs(query.message))
         
         elif callback_data.startswith("faq_answer_"):
             faq_id = callback_data.split("_")[-1]
-            await get_faq_answer(query.message, faq_id)
+            tasks.append(get_faq_answer(query.message, faq_id))
+        
+        # Execute all tasks concurrently
+        if tasks:
+            await asyncio.gather(*tasks)
             
     except Exception as e:
         logger.error(f"Error handling button callback: {e}")
@@ -987,8 +989,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 )
                 
-                # Update temporary message with RAG response
-                await temp_message.edit_text(rag_response)
+                # Update temporary message with RAG response using HTML parse mode
+                await temp_message.edit_text(rag_response, parse_mode="HTML")
             except Exception as e:
                 logger.error(f"Error handling message: {e}")
                 await temp_message.edit_text("Sorry, I cannot process your request at this time. Please try again later.")
@@ -999,7 +1001,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """
-    Main function to start the bot
+    Main function to start the bot with Render deployment support
     """
     try:
         # Start health check server in a separate thread for Render
@@ -1026,11 +1028,12 @@ def main():
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         application.add_handler(CallbackQueryHandler(button_callback))
 
-        # Start the Bot in webhook mode
+        # Start the Bot in webhook mode for Render
         port = int(os.environ.get("PORT", 8080))
         webhook_url = os.environ.get("WEBHOOK_URL")
         
         if webhook_url:
+            logger.info(f"Starting bot in webhook mode on port {port}")
             application.run_webhook(
                 listen="0.0.0.0",
                 port=port,
@@ -1038,6 +1041,7 @@ def main():
             )
         else:
             # Fallback to polling mode if webhook URL is not set
+            logger.info("Starting bot in polling mode")
             application.run_polling()
             
     except Exception as e:

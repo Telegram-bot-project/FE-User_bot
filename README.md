@@ -1,57 +1,77 @@
-# User Bot
+# Telegram User Bot for Solana SuperTeam
 
-Telegram bot used for interacting with users and integrating RAG model.
+A Telegram bot that provides information about Solana SuperTeam events, FAQs, and general assistance.
 
-## Structure
+## Features
 
-This bot provides the following functions:
-- Answering questions using RAG model
-- Displaying event information
-- Displaying frequently asked questions (FAQ)
-- Providing quick access menu
+- Event information and updates
+- FAQ system with interactive buttons
+- Assistant contact information
+- Knowledge base integration
+- Redis caching (optional)
+- Webhook support for deployment
 
-## Required Environment Variables
+## Requirements
 
-- `TELEGRAM_BOT_TOKEN`: Telegram bot token from BotFather
-- `API_MONGO_URL`: MongoDB API URL
-- `API_RAG_URL`: RAG API URL
+- Python 3.8+
+- Redis (optional)
+- Telegram Bot Token
+- MongoDB API URL
+- RAG API URL
+
+## Environment Variables
+
+Create a `.env` file with the following variables:
+
+```env
+TELEGRAM_BOT_TOKEN=your_bot_token
+API_MONGO_URL=your_mongo_api_url
+API_RAG_URL=your_rag_api_url
+REDIS_URL=your_redis_url
+USE_REDIS=true
+WEBHOOK_URL=your_webhook_url
+```
+
+## Installation
+
+1. Clone the repository:
+```bash
+git clone https://github.com/yourusername/telegram-user-bot.git
+cd telegram-user-bot
+```
+
+2. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+3. Run the bot:
+```bash
+python user_bot.py
+```
 
 ## Deployment on Render
 
-### Step 1: Register a Render Account
+1. Fork this repository
+2. Create a new Web Service on Render
+3. Connect your GitHub repository
+4. Add environment variables in Render dashboard
+5. Deploy!
 
-Visit [Render](https://render.com) and register an account if you don't have one.
+## Development
 
-### Step 2: Create a New Web Service
+- The bot supports both polling and webhook modes
+- Redis is optional and will fallback to in-memory cache if unavailable
+- Health check endpoint available at `/health`
 
-1. Log in to Render and click on "New +"
-2. Select "Web Service"
-3. Connect with your GitHub repository or upload directly
+## Contributing
 
-### Step 3: Configure Web Service
+1. Fork the repository
+2. Create your feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a new Pull Request
 
-1. **Name**: Set a name for the service (e.g., telegram-user-bot)
-2. **Runtime**: Choose Docker
-3. **Root Directory**: Specify the path to the `telegram/user_bot` directory
-4. **Build Command**: Leave empty (use Dockerfile)
-5. **Start Command**: Leave empty (use CMD in Dockerfile)
+## License
 
-### Step 4: Set Up Environment Variables
-
-In the "Environment" section, add the following variables:
-
-- `TELEGRAM_BOT_TOKEN`: Telegram bot token from BotFather
-- `API_MONGO_URL`: MongoDB API URL
-- `API_RAG_URL`: RAG API URL
-
-### Step 5: Choose a Plan and Deploy
-
-1. Select an appropriate plan (you can use the Free plan for testing)
-2. Click "Create Web Service"
-
-## Important Notes
-
-- Ensure API_MONGO_URL and API_RAG_URL are accessible from the internet
-- Render's Free plan will pause after 15 minutes of inactivity, slowing down the first response
-- Check logs on Render if the bot is not working
-- If you encounter a "health check failed" error, check your configuration to ensure the HTTP server is listening on the correct port 
+This project is licensed under the MIT License - see the LICENSE file for details. 
