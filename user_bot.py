@@ -457,15 +457,19 @@ async def get_events(message):
             except Exception as e:
                 logger.error(f"Failed to fetch events from API: {e}")
         
+        # Update or delete the temporary message
+        await temp_message.delete()
+        
         if not events:
-            await temp_message.edit_text("No upcoming events found.")
+            await message.reply_text("No upcoming events found.")
             return
         
         logger.info(f"Found {len(events)} events")
         
-        # Send all events in a single message
-        events_text = "📅 *Upcoming Events:*\n\n"
+        # First send a header message
+        await message.reply_text("📅 *Upcoming Events*", parse_mode="Markdown")
         
+        # Send each event as a separate message
         for event in events:
             try:
                 name = event.get('name', 'No name')
@@ -475,18 +479,46 @@ async def get_events(message):
                 time = event.get('time', '')
                 date = event.get('date', '')
                 
-                events_text += f"🎯 *{name}*\n"
-                events_text += f"📝 {description}\n"
-                events_text += f"📆 {date}\n"
-                events_text += f"🕒 {time}\n"
-                events_text += f"📍 {address}\n"
-                events_text += f"💰 {price}\n\n"
+                # Process price formatting
+                formatted_price = "Free"
+                if price.lower() != "free" and price:
+                    # Handle complex price format like "(General Admission|100|USD)(Vip|1000|USD)"
+                    price_tiers = []
+                    for tier_match in re.finditer(r'\(([^|]+)\|([^|]+)\|([^)]+)\)', price):
+                        if len(tier_match.groups()) == 3:
+                            tier_name, tier_price, tier_currency = tier_match.groups()
+                            price_tiers.append(f"• {tier_name}: {tier_price} {tier_currency}")
+                    
+                    if price_tiers:
+                        formatted_price = "\n".join(price_tiers)
+                    else:
+                        formatted_price = price
+                
+                # Build event message
+                event_text = f"🎯 *{name}*\n"
+                if description:
+                    event_text += f"📝 {description}\n"
+                if date:
+                    event_text += f"📆 {date}\n"
+                if time:
+                    event_text += f"🕒 {time}\n"
+                if address:
+                    event_text += f"📍 {address}\n"
+                
+                # Add price information
+                if formatted_price:
+                    if formatted_price == "Free":
+                        event_text += f"💰 {formatted_price}\n"
+                    else:
+                        event_text += f"💰 Price:\n{formatted_price}\n"
+                
+                # Send individual event message
+                await message.reply_text(event_text, parse_mode="Markdown")
                 
             except Exception as e:
                 logger.error(f"Error processing event: {e}")
-        
-        # Update temporary message with final content
-        await temp_message.edit_text(events_text, parse_mode="Markdown")
+                continue
+                
     except Exception as e:
         logger.error(f"Error getting events: {e}")
         await message.reply_text("Unable to fetch events at this time. Please try again later.")
