@@ -730,28 +730,14 @@ async def get_faq_answer(message, faq_id):
         logger.error(f"Error in get_faq_answer: {e}")
         await message.reply_text("Unable to fetch FAQ answer at this time. Please try again later.")
 
-# Function to get response from RAG model with Redis cache - Optimized
+# Function to get response from RAG model - Direct API call without Redis
 async def get_rag_response(user_message, user_id):
     """
-    Get response from RAG model with Redis cache
+    Get response from RAG model directly from API without Redis caching
     """
     try:
-        # Try to get from cache first if Redis is available
-        try:
-            redis = await get_redis()
-            # Include user_id in cache key for personalized responses
-            cache_key = f"rag_response:{user_id}:{hashlib.md5(user_message.encode()).hexdigest()}"
-            
-            cached_response = await redis.get(cache_key)
-            if cached_response:
-                logger.info(f"Retrieved RAG response from cache for user {user_id}")
-                return cached_response
-        except Exception as e:
-            logger.warning(f"Cache retrieval failed, proceeding to API: {e}")
-        
-        # If not in cache or cache failed, get from API
+        # Call API directly
         session = await get_session()
-        # Use actual user_id in API call
         payload = {"query": user_message, "user_id": str(user_id)}
         
         logger.info(f"Sending RAG request with user_id: {user_id}")
@@ -768,17 +754,6 @@ async def get_rag_response(user_message, user_id):
                         rag_answer = str(result)
                     
                     if rag_answer:
-                        # Try to cache the response, but don't fail if cache fails
-                        try:
-                            redis = await get_redis()
-                            await redis.setex(
-                                cache_key,
-                                CACHE_TTL['rag_response'],
-                                rag_answer
-                            )
-                        except Exception as e:
-                            logger.warning(f"Failed to cache RAG response: {e}")
-                        
                         return rag_answer
                     else:
                         return "I don't know how to answer that. Let me forward this to the admin team."
